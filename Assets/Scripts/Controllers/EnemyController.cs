@@ -2,118 +2,127 @@ using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.AI;
+
 public class EnemyController : MonoBehaviour
 {
-    public float lookRadius = 10f;
-
-    public Transform player;                             // The target of the AI
-
-    public NavMeshAgent agent;                           // Some sort of thing to make the ai understand how to move around an area
-
-    public LayerMask whatIsGround, whatIsPlayer;  // What will tell the AI if it is walking on a proper surface, and who the target is
-
-    public float health = 50f; //self explanatory
-
-    //Patrolling
-    public Vector3 walkPoint;
-    bool walkPointSet;
-    public float walkPointRange;
-
-    //Attack Variables (Whatever these are called again)
-    public float timeBetweenAttacks;
-    bool alreadyAttacked;
-    public GameObject projectile;
-
-    //States
-    public float sightRange, attackRange;
-    public bool playerInAttackRange, playerInSightRange, playerInLineOfSight;
-    bool lineOfSight;
-   
-
-    // Start is called before the first frame update
-
-    private void Awake()
-    {
-        player = GameObject.Find("PlayerCamera").transform;
-        agent = GetComponent<NavMeshAgent>();
-    }
-
-    private void Update()
-    {
-        
-        agent.updateRotation = true;
-
-        //Check for Sight and Attack Range
-        playerInAttackRange = Physics.CheckSphere(transform.position, attackRange, whatIsPlayer);
-        playerInSightRange = Physics.CheckSphere(transform.position, sightRange, whatIsPlayer);
-
-        if (!playerInSightRange && !playerInAttackRange) Idle();
-        if (playerInSightRange && !playerInAttackRange)  MoveInOnPlayer();
-        if (playerInSightRange && playerInAttackRange)   AttackPlayer();
-        //if (!playerInLineOfSight && playerInAttackRange) FlankPlayer();
-
-    }
-
-    void Idle()
-    {
-        if (!walkPointSet) SearchWalkPoint();
-
-        if (walkPointSet)
-            agent.SetDestination(walkPoint);
-
-        Vector3 distanceToWalkPoint = transform.position - walkPoint;
-
-        if (distanceToWalkPoint.magnitude < 1f)
-            walkPointSet = false;
-        //They'll always be in sight range, so no need for this
-    }
-
-    private void SearchWalkPoint()
-    {
-        //calculate random point in range
-        float randomZ = Random.Range(-walkPointRange, walkPointRange);
-        float randomX = Random.Range(-walkPointRange, walkPointRange);
-
-        walkPoint = new Vector3(transform.position.x + randomX, transform.position.y, transform.position.z + randomZ);
-
-        if (Physics.Raycast(walkPoint, -transform.up, 2f, whatIsGround))
-            walkPointSet = true;
-    }
+    [SerializeField] Transform _target;
+    [SerializeField] Transform _muzzle;
+    [SerializeField] NavMeshAgent _navigation;// component that allows navmesh navigation
+    [SerializeField] LayerMask _whatIsPlayer;
+    [SerializeField] GameObject _projectilePrefab;
+    [SerializeField] float _timeBetweenAttacks = 1f;
+    [SerializeField] float _wanderRange = 5f;
+    [SerializeField] float _sightRange = 10f;
+    [SerializeField] float _attackRange = 5f;
     
-    void MoveInOnPlayer()
+    bool _playerInAttackRange, _playerInSightRange;
+    float _lastAttackTime = float.MinValue;
+    
+    void Update ()
     {
-        agent.SetDestination(player.position);
+        //Check for Sight and Attack Range
+        Vector3 position = transform.position;
+        _playerInSightRange = Physics.CheckSphere( position , _sightRange , _whatIsPlayer );
+        _playerInAttackRange = Physics.CheckSphere( position , _attackRange , _whatIsPlayer );
+
+        if( !_playerInSightRange && !_playerInAttackRange )         Wander();
+        else if( _playerInSightRange && !_playerInAttackRange )     MoveInOnPlayer();
+        else if( _playerInSightRange && _playerInAttackRange )      AttackPlayer();
+        //else if (!playerInLineOfSight && playerInAttackRange) FlankPlayer();
     }
 
-    void AttackPlayer()
+    void Wander ()
     {
-        //agent.updateRotation = false;
-        transform.LookAt(player.transform);
-
-        agent.SetDestination(transform.position);
-        // Right now we follow the guide, so the enemy is stationary here
-        //who wants an enemy that doesnt look at you?
-        Debug.Log(agent.transform.position);
-        if (!alreadyAttacked)
+        if( _navigation.isStopped )
+        // if( _navigation.remainingDistance <= _navigation.stoppingDistance )
         {
-            //Attack code here
-            Rigidbody rb = Instantiate(projectile, transform.position, Quaternion.identity).GetComponent<Rigidbody>();
-            rb.AddForce(transform.forward * 32f, ForceMode.Impulse);
+            _navigation.isStopped = false;
+            _navigation.updateRotation = true;
 
-            ///
-            alreadyAttacked = true;
-            Invoke(nameof(ResetAttack), timeBetweenAttacks);
+            Vector3 dst = FindRandomDestination( transform.position , _wanderRange );
+            _navigation.SetDestination( dst );
         }
-        
-
     }
 
-    void ResetAttack()
+    Vector3 FindRandomDestination ( Vector3 start , float maxRange )
+	{
+		Vector2 randomDirection = Random.insideUnitCircle * maxRange;
+		Vector3 p = start + new Vector3( randomDirection.x , 0 , randomDirection.y );
+		if( NavMesh.SamplePosition( p , out var hit , maxRange , NavMesh.AllAreas ) )
+			return hit.position;
+		else
+			return start;
+	}
+    
+    void MoveInOnPlayer ()
     {
-        alreadyAttacked = false;
+        _navigation.SetDestination( _target.position );
     }
 
-    //void FlankPlayer()
+    void AttackPlayer ()
+    {
+        Vector3 position = transform.position;
+        Vector3 targetPosition = _target.position;
+        
+        // rotate body to face the enemy:
+        _navigation.isStopped = true;
+        _navigation.updateRotation = false;
+        transform.rotation = Quaternion.LookRotation(
+            Vector3.Scale( targetPosition - position , new Vector3(1,0,1) ) ,
+            Vector3.up
+        );
+
+        // point muzzle at target position:
+        _muzzle.LookAt( targetPosition );
+        Debug.DrawLine( _muzzle.position , targetPosition , Color.red );
+
+        // attack code:
+        if( Time.time > _lastAttackTime+_timeBetweenAttacks )
+        {
+            _lastAttackTime = Time.time;
+
+            if( _projectilePrefab!=null )
+            {
+                var instance = Instantiate( _projectilePrefab , _muzzle.position , _muzzle.rotation );
+                Rigidbody rb = instance.GetComponent<Rigidbody>();
+                if( rb!=null )
+                {
+                    rb.AddForce( _muzzle.forward*32f , ForceMode.Impulse );
+                }
+            }
+        }
+    }
+
+    #if UNITY_EDITOR
+    void OnDrawGizmos ()
+    {
+        if( Application.isPlaying )
+        {
+            Vector3 position = transform.position;
+
+            if( _navigation.hasPath )
+            {
+                UnityEditor.Handles.color = Color.cyan;
+                UnityEditor.Handles.DrawPolyLine( _navigation.path.corners );
+            }
+
+            UnityEditor.Handles.color = Color.yellow;
+            UnityEditor.Handles.CircleHandleCap( -1 , position , Quaternion.Euler(90,0,0) , _sightRange , EventType.Repaint );
+            UnityEditor.Handles.color = Color.red;
+            UnityEditor.Handles.CircleHandleCap( -1 , position , Quaternion.Euler(90,0,0) , _attackRange , EventType.Repaint );
+
+            GUIStyle labelStyle = new GUIStyle();
+            labelStyle.normal.textColor = Color.magenta;
+            UnityEditor.Handles.Label(
+                position ,
+                $"nav stopped: {_navigation.isStopped}\nnav rotation: {(_navigation.updateRotation?"auto":"manual")}" ,
+                labelStyle
+            );
+        }
+    }
+    #endif
+
+    //void FlankPlayer ()
    // {
 
    // }
